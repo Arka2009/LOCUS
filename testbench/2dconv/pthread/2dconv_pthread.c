@@ -13,14 +13,20 @@
 #include <float.h>
 #include <pthread.h>
 #include <unistd.h>
-
-#define DUMP
+#ifdef PROFILENATIVE
+#include <ecotools/roi_hooks.h>
+#include <ecotools/cpu_uarch.h>
+#endif
+#ifdef PROFILESNIPER
+#include "sim_api.h"
+#endif
+//#define DUMP
 
 #ifdef DUMP
 #include<m5op.h>
 #endif
 
-#define num_threads 16
+#define MAX_THREADS 256
 
 /*
 #include <unistd.h>
@@ -43,7 +49,7 @@ int NJ = 128;
 int NUM_THREADS = 16;
 
 //Global thread list
-pthread_t thread[num_threads];
+pthread_t thread[MAX_THREADS];
 pthread_barrier_t barr; //barrier
 
 //Data input
@@ -52,8 +58,7 @@ DATA_TYPE* B; //Output Image
 
 //Convole input array A with a 3X3 matrix whose value is hardcoded inside this function
 //Write the output to variable B
-void calc_conv2D(int id)
-{
+void calc_conv2D(int id) {
     //printf("\ncore %d step 3\n", id);
 	int i, j;
 	DATA_TYPE c11, c12, c13, c21, c22, c23, c31, c32, c33;
@@ -95,8 +100,7 @@ void calc_conv2D(int id)
  * We can have 10 buckets for now
  */
 
-void get_options(int argc, char **argv)
-{
+void get_options(int argc, char **argv) {
         int op;
         while ((op = getopt(argc, argv, "hi:j:t:")) != -1) {
                 switch (op) {
@@ -117,38 +121,37 @@ void get_options(int argc, char **argv)
 }
 
 //function to initialize the input array by reading from the input files
-void init(int k)
-{
+void init(int k) {
 	int i, j, num_rows;
 	num_rows = NI / NUM_THREADS;
-	char filename[256] = {"/home/vanchi/input_2dconv/pthrd_"};
-	int base_fname_length = 32;
-
-	char rank_str[20];
-	sprintf(rank_str, "%d", k);
-
-	for(i = 0; rank_str[i] != '\0'; i++)
-		filename[base_fname_length + i] = rank_str[i];
-	filename[base_fname_length + i] = '\0';
-    //printf("\ncore %d step 2.5\n", k);
-	FILE *fp = fopen(filename, "r");
-
-    //printf("\ncore %d step 2.6 finished open the file\n", k);
-    if(fp == NULL)
-    {
-        printf("\ncannot open the file %s\n", filename);
-    }
+	// char filename[BUFSIZ];
+	// char log[BUFSIZ];
+	// //char filename[256] = {"/home/vanchi/input_2dconv/pthrd_"};
+	// sprintf(filename,"%s/testbench/2dconv/input_2dconv/pthrd_%d",getenv("LOCUS"),k);
+	// FILE *fp = fopen(filename, "r");
+    	// //printf("\ncore %d step 2.6 finished open the file\n", k);
+    	// if(fp == NULL) {
+        // 	sprintf(log,"cannot open the file %s\n", filename);
+	// 	#ifdef PROFILENATIVE
+	// 	PRINTERROR(log);
+	// 	#else
+	// 	printf("%s",log);
+	// 	exit(EXIT_FAILURE);
+	// 	#endif
+    	// }
 	//printf("NI = %d NJ = %d\n", NI, NJ);
 	for (i = 0; i < num_rows; ++i)
 	{
 		for (j = 0; j < NJ; ++j)
 		{
-			fscanf(fp, "%f", &A[ (k*num_rows + i)*NJ + j]);
+			// fscanf(fp, "%f", &A[ (k*num_rows + i)*NJ + j]);
+			// printf("k:%d,i:%d,j%d\n",k,i,j);
 			//printf("%lf", A[ (k*num_rows + i)*NJ + j]);
+			/* Randomly generate the inputs */
+			A[(k*num_rows + i)*NJ + j] = (rand() % 256);
 		}
 	}
-
-	fclose(fp);
+	// fclose(fp);
 }
 
 //function to print contents of the input array
@@ -182,14 +185,12 @@ void printToFile(DATA_TYPE* A)
         }
 	fclose(fp);
 }
-void * thread_function(void * thread_id)
-{
+void * thread_function(void * thread_id) {
 	//Get id, gives warning but whatevski
 	int *id = (int*)thread_id;
 	int temp = *id;
 
 	init(temp);
-
 	pthread_barrier_wait(&barr);
 	if(temp == 0)
 	{
@@ -209,9 +210,6 @@ void * thread_function(void * thread_id)
         m5_reset_stats(0, 0);
 #endif
         }
-
-        //if(temp == 0)
-	//	printf("done convolution %d\n", temp);
 }
 
 void compute_using_pthreads()
@@ -219,7 +217,7 @@ void compute_using_pthreads()
 	pthread_barrier_init(&barr, NULL, NUM_THREADS);
 
         //Start threads
-        int thread_id[num_threads];
+        int thread_id[MAX_THREADS];
         int x;
         for(x=0; x < NUM_THREADS-1; ++x)
         {
@@ -231,19 +229,30 @@ void compute_using_pthreads()
        thread_function((void*) (thread_id + x));
 }
 
-int main(/*int argc, char *argv[]*/)
-{
+int main(int argc, char *argv[]) {
 	//int argc = 7;
 	//char *argv[] = {"", "-i", "256", "-j", "256", "-t", "16"};
 
-	//get image size and number of threads
-	//get_options(argc, argv);
+	/* Input Size and number of threads */
+	get_options(argc, argv);
 
 	//Allocate array
 	A = (DATA_TYPE*)malloc(NI*NJ*sizeof(DATA_TYPE));
 	B = (DATA_TYPE*)malloc(NI*NJ*sizeof(DATA_TYPE));
 
+	#ifdef PROFILENATIVE
+	__eco_roi_start_timer();
+	#endif
+	#ifdef PROFILESNIPER
+	SimRoiStart();
+	#endif
 	compute_using_pthreads();
+	#ifdef PROFILESNIPER
+	SimRoiEnd();
+	#endif
+	#ifdef PROFILENATIVE
+	__eco_roi_stop_timer();
+	#endif
 
 	//printToFile(B);
 	//printf("done with printing to file\n");
